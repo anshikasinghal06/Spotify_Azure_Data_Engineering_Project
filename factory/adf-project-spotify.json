@@ -1,0 +1,15 @@
+{
+	"name": "adf-project-spotify",
+	"properties": {
+		"trustModeClaimForMi": {
+			"value": "Disabled",
+			"editable": true
+		}
+	},
+	"location": "eastus",
+	"identity": {
+		"type": "SystemAssigned",
+		"principalId": "ed26b2da-29f1-45db-97cd-5f71746ac05a",
+		"tenantId": "207ed6fa-66be-488a-a41b-d68efc400fec"
+	}
+}
