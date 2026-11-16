@@ -1,0 +1,21 @@
+bundle:
+  name: spotify_dab
+  uuid: 08dfe302-4502-44c1-8eec-1ad0c564b73f
+
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://<your-workspace>.azuredatabricks.net
+      sync_mode: overwrite
+
+  prod:
+    mode: production
+    workspace:
+      host: https://<your-workspace>.azuredatabricks.net
+      root_path: /Workspace/PROD/.bundle/${bundle.name}/${bundle.target}
+    permissions:
+      - user_name: your_email@example.com
+        level: CAN_MANAGE
