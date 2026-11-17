@@ -29,6 +29,7 @@ Data is copied **incrementally** from Azure SQL Database into a Data Lake with *
 11. [Security Practices](#-security-practices)
 12. [Cost Management](#-cost-management)
 13. [Next Steps](#-next-steps)
+14. [Author](#-author)
 
 ---
 
@@ -38,11 +39,21 @@ Data is copied **incrementally** from Azure SQL Database into a Data Lake with *
 - **Metadata-driven:** one ADF pipeline loops over an array of tables. Adding a table means adding one array entry.
 - **Self-cleaning and observable:** empty output files are deleted automatically, and a Logic App emails the result of every run.
 - **Resilient streaming:** Auto Loader checkpoints make reruns safe, and schema evolution handles new columns without breaking.
-- **Full history:** SCD Type 2 dimensions built with `create_auto_cdc_flow` keep every version of a track or user.
+- **Full history:** SCD Type 2 tables built with `create_auto_cdc_flow` keep every version of a track or user.
 - **Governed:** Unity Catalog with a managed-identity access connector. No storage keys in code.
 - **Cost-aware:** serverless compute, `availableNow` triggers, free-tier SQL.
 
-**Outcome:** 5 source tables (2,865 sample rows) flow through Bronze (Parquet), Silver (Delta) and Gold (SCD2 Delta). Each run loads only new data, resumes safely after a failure, and preserves the history of every change.
+### Project at a Glance
+
+| Item | Value |
+|---|---|
+| Source tables | 5 (1 fact, 4 dimensions), 2,865 sample rows |
+| Layers | Bronze (Parquet), Silver (Delta), Gold (SCD2 Delta) |
+| Gold tables | 4 (`dimdate`, `dimtrack`, `dimuser`, `factstream`) |
+| ADF pipelines | 2 (`incremental_ingestion`, `incremental_loop`) |
+| Environments | dev and prod bundle targets |
+
+**Outcome:** the 5 source tables flow through Bronze and Silver, and the gold pipeline publishes 4 history-tracked tables. Each run loads only new data, resumes safely after a failure, and preserves the history of every change.
 
 ---
 
@@ -58,7 +69,7 @@ Data is copied **incrementally** from Azure SQL Database into a Data Lake with *
 | One pipeline per table is hard to maintain | A **metadata-driven loop**: a ForEach over an array of tables runs the same logic for each |
 | Empty runs clutter the lake, and failures go unnoticed | An **If Condition** deletes empty output, and a **Logic App** sends email alerts |
 | Slow file discovery and schema changes break the pipeline | **Databricks Auto Loader** with checkpoints, schema evolution and a rescued-data column |
-| Old values are overwritten, so history is lost | **SCD Type 2** dimensions built with `create_auto_cdc_flow` |
+| Old values are overwritten, so history is lost | **SCD Type 2** tables built with `create_auto_cdc_flow` |
 | Access to data is inconsistent and hard to audit | **Unity Catalog** with a metastore, external locations, and Bronze, Silver and Gold layers |
 
 ---
@@ -82,7 +93,7 @@ flowchart LR
     end
 
     subgraph GOLD [Gold layer: business-ready data]
-        G[(gold container<br/>managed Delta tables, SCD2)]
+        G[(gold container<br/>history-tracked Delta tables)]
     end
 
     B --> C
@@ -98,7 +109,7 @@ flowchart LR
 |---|---|---|---|---|
 | 🥉 **Bronze** | ADLS Gen2 `bronze` container | Parquet | Azure Data Factory | Raw data copied incrementally from the source |
 | 🥈 **Silver** | ADLS Gen2 `silver` container | Delta (external tables) | Databricks Auto Loader (PySpark) | Cleaned, deduplicated and enriched data |
-| 🥇 **Gold** | ADLS Gen2 `gold` container | Delta (managed tables) | Lakeflow Spark Declarative Pipelines | History-tracked dimension tables |
+| 🥇 **Gold** | ADLS Gen2 `gold` container | Delta (managed tables) | Lakeflow Spark Declarative Pipelines | History-tracked tables |
 
 ---
 
@@ -293,7 +304,7 @@ This is the stream's transformed output for DimUser, with upper-cased names.
 |---|---|---|
 | DimUser | Upper-case `user_name`, drop `_rescued_data`, deduplicate on `user_id` | Consistent names, one row per user |
 | DimArtist | Drop `_rescued_data`, deduplicate on `artist_id` | One row per artist |
-| DimTrack | `durationFlag` (low, medium, high from `duration_sec`), clean `track_name`, drop `_rescued_data` | Derived attribute and cleaner names |
+| DimTrack | `durationFlag` (low under 150 s, medium under 300 s, high otherwise), clean `track_name`, drop `_rescued_data` | Derived attribute and cleaner names |
 | DimDate | Drop `_rescued_data` | Analysis-ready calendar |
 | FactStream | Drop `_rescued_data` | Analysis-ready facts |
 
@@ -315,7 +326,7 @@ After loading, these are the row counts for the silver tables.
 
 ### 6. Gold layer with Declarative Pipelines (SCD Type 2)
 
-Each dimension has a staging streaming table and a target table that applies changes with `create_auto_cdc_flow`, keeping the history of every change. Staging tables carry data-quality expectations.
+The gold pipeline has four tables: `dimdate`, `dimtrack`, `dimuser` and `factstream`. Each has a staging streaming table that reads from silver and feeds a target table, where changes are applied with `create_auto_cdc_flow` so the history of every change is kept. Staging tables carry data-quality expectations.
 
 ```python
 import dlt
@@ -335,17 +346,17 @@ dlt.create_auto_cdc_flow(
 )
 ```
 
-A completed run shows the staging tables feeding their target tables, with row counts and no errors.
+A completed run of the gold pipeline: each staging table feeds its target table, with no errors.
 
 **Figure 18: Pipeline graph**
 
-![Pipeline graph](images/16_databricks_gold_pipeline_graph.png)
+![Pipeline graph](images/16_databricks_gold_pipeline_graph_2.png)
 
-The SCD2 result is visible in the data. The same `track_id` appears more than once, and `__START_AT` shows when each version became valid.
+The SCD2 result is visible in the data. The same `track_id` appears more than once, `__START_AT` shows when each version became valid, `__END_AT` closes the old version, and the current version has a null `__END_AT`. The `durationFlag` values match the rule (under 150 s low, 150 to 299 s medium, 300 s and above high).
 
 **Figure 19: DimTrack history**
 
-![DimTrack SCD2](images/16_databricks_gold_dimtrack_scd2.png)
+![DimTrack SCD2](images/16_databricks_gold_dimtrack_scd2_2.png)
 
 The gold DimUser table carries the same history columns.
 
@@ -430,7 +441,7 @@ The deploy uploads the project files to separate paths for each target. The silv
 | Data governance | Unity Catalog metastore, storage credential and external locations |
 | Managed identity access | Access connector with a Storage Blob Data Contributor role |
 | SCD Type 2 | `create_auto_cdc_flow` with `__START_AT` and `__END_AT` |
-| Data quality | Expectations on staging tables |
+| Data quality | Expectations on staging tables, plus a validation query on derived values |
 | Alerting | Logic App email triggered from ADF |
 | Git workflow | ADF feature branch, pull request and `main` |
 | Infrastructure as code | Declarative Automation Bundle with dev and prod targets |
@@ -462,6 +473,7 @@ The most instructive problems:
 | **Pipeline failed with `DAC_DOES_NOT_EXIST`** | The metastore had no root storage credential, so managed tables had nowhere to go | Gave the gold schema its own managed location, and used external tables with an explicit `path` in silver |
 | **`LOCATION_OVERLAP` when creating a table** | An earlier test table already used the same storage path | Dropped the old table and cleared its folder before rerunning |
 | **Duplicate table error in the gold pipeline** | A staging table was defined in two files, and every table name must be unique across the pipeline | Removed the duplicate definition |
+| **`durationFlag` labels were swapped in DimTrack** | The `medium` and `high` labels were reversed in the silver transformation, which a validation query against the rule exposed | Corrected the labels with an `UPDATE` on silver, ran a full refresh of the gold tables and verified the value ranges |
 
 ---
 
@@ -491,9 +503,18 @@ Spend by service for the project's resource group was covered by the free trial 
 
 ## 🔭 Next Steps
 
-- Store secrets in **Azure Key Vault**, and use a managed identity instead of an account key for the ADF Data Lake connection.
-- Trigger the Databricks notebook and gold pipeline from ADF, and add a schedule trigger for end-to-end orchestration.
-- Define the gold pipeline as a bundle resource, so `bundle deploy` creates it for each environment.
-- Add CI/CD for ADF (automated publish) and for the bundle.
-- Fix the metastore root credential so managed tables work without per-schema locations.
-- Build a Power BI report on the gold tables.
+- [ ] Store secrets in **Azure Key Vault**, and use a managed identity instead of an account key for the ADF Data Lake connection.
+- [ ] Trigger the Databricks notebook and gold pipeline from ADF, and add a schedule trigger for end-to-end orchestration.
+- [ ] Define the gold pipeline as a bundle resource, so `bundle deploy` creates it for each environment.
+- [ ] Add CI/CD for ADF (automated publish) and for the bundle.
+- [ ] Fix the metastore root credential so managed tables work without per-schema locations.
+- [ ] Build a Power BI report on the gold tables.
+
+---
+
+
+## 👤 Author
+
+**Anshika Singhal** *(Data Engineer · Azure · Databricks)*
+
+[LinkedIn](https://www.linkedin.com/in/anshika-singhal-81a496203) · [GitHub](https://github.com/anshikasinghal06) · [Email](mailto:anshikasinghal089@gmail.com)
